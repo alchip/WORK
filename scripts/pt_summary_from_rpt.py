@@ -17,8 +17,26 @@ where each path block contains:
 
 It produces a summary in the same format as /Users/sunnyy/test/wo_io.rpt.summary.
 
+Block mapping (optional):
+  By default, the "startpoint block / endpoint block" table uses the first hierarchy token
+  (e.g. m_misc/m_max_buf/... -> m_misc).
+
+  You can override this by supplying one or more mapping files. Mapping uses longest-prefix
+  match against the full instance path.
+
+  Mapping file format (one per line):
+    m_misc/m_max_buf/ -> m_max_buf
+    m_misc/m_abuf/    -> m_abuf
+  Lines starting with # are ignored.
+
 Usage:
+  # Basic
   ./pt_summary_from_rpt.py /Users/sunnyy/test/wo_io.rpt.gz -o /Users/sunnyy/test/out.summary
+
+  # With mapping file (repeatable)
+  ./pt_summary_from_rpt.py /Users/sunnyy/test/wo_io.rpt.gz \
+    --block-map-file /Users/sunnyy/test/block_map.txt \
+    -o /Users/sunnyy/test/out.summary
 """
 
 from __future__ import annotations
@@ -101,8 +119,27 @@ def parse_last_float_token(line: str) -> Optional[str]:
     return m.group(1) if m else None
 
 
-def top_block(inst: str) -> str:
-    # e.g. m_misc/m_max_buf/... -> m_misc
+def _normalize_prefix(p: str) -> str:
+    p = p.strip()
+    if not p:
+        return p
+    # treat mapping prefixes as hierarchy prefixes
+    return p if p.endswith("/") else (p + "/")
+
+
+def top_block(inst: str, prefix_map: List[Tuple[str, str]]) -> str:
+    """Return the block name used in the startpoint/endpoint block table.
+
+    Default behavior (no mapping hit): use the first hierarchy token.
+
+    With prefix_map: do a longest-prefix match against the full instance path.
+    Example mapping:
+      m_misc/m_max_buf/ -> m_max_buf
+    """
+    for prefix, name in prefix_map:
+        if inst.startswith(prefix):
+            return name
+    # fallback: first level
     return inst.split("/", 1)[0] if "/" in inst else inst
 
 
@@ -315,7 +352,7 @@ def fmt3(x: float) -> str:
     return f"{x:.3f}"
 
 
-def emit_summary(paths: List[PathRec]) -> str:
+def emit_summary(paths: List[PathRec], prefix_map: List[Tuple[str, str]]) -> str:
     neg = [p for p in paths if p.slack is not None and p.slack < 0]
 
     slack_bins = make_slack_bins()
@@ -333,11 +370,14 @@ def emit_summary(paths: List[PathRec]) -> str:
     # path group table
     pg_count: Dict[str, int] = Counter(p.path_group for p in neg)
     pg_wns: Dict[str, float] = {}
+    pg_tns: Dict[str, float] = Counter()
     for p in neg:
         if p.slack is None:
             continue
-        pg_wns[p.path_group] = min(pg_wns.get(p.path_group, 0.0), p.slack)
-        if p.path_group not in pg_wns:
+        pg_tns[p.path_group] += p.slack
+        if p.path_group in pg_wns:
+            pg_wns[p.path_group] = min(pg_wns[p.path_group], p.slack)
+        else:
             pg_wns[p.path_group] = p.slack
 
     # start/end clock table
@@ -353,7 +393,7 @@ def emit_summary(paths: List[PathRec]) -> str:
         clk_wns[k] = min(clk_wns.get(k, p.slack), p.slack)
 
     # start/end block table
-    blk_key = lambda p: (top_block(p.start_inst), top_block(p.end_inst))
+    blk_key = lambda p: (top_block(p.start_inst, prefix_map), top_block(p.end_inst, prefix_map))
     blk_count: Dict[Tuple[str, str], int] = Counter(blk_key(p) for p in neg)
     blk_wns: Dict[Tuple[str, str], float] = {}
     blk_tns: Dict[Tuple[str, str], float] = Counter()
@@ -406,12 +446,14 @@ def emit_summary(paths: List[PathRec]) -> str:
     out.append(f" total{total:>47}")
     out.append("")
 
-    out.append(" path group                           # of violations           worst slack")
-    out.append(" ------------------------------  --------------------  --------------------")
+    out.append(" path group                           # of violations           worst slack           total slack")
+    out.append(" ------------------------------  --------------------  --------------------  --------------------")
     for pg in sorted(pg_count.keys()):
-        out.append(f" {pg:<30}  {pg_count[pg]:>20}  {pg_wns.get(pg,0.0):>20.3f}")
-    out.append(" ------------------------------  --------------------  --------------------")
-    out.append(f" *{'':<30}  {total:>20}  {wns:>20.3f}")
+        out.append(
+            f" {pg:<30}  {pg_count[pg]:>20}  {pg_wns.get(pg,0.0):>20.3f}  {pg_tns.get(pg,0.0):>20.3f}"
+        )
+    out.append(" ------------------------------  --------------------  --------------------  --------------------")
+    out.append(f" *{'':<30}  {total:>20}  {wns:>20.3f}  {tns:>20.3f}")
     out.append("")
 
     out.append(
@@ -494,17 +536,77 @@ def parse_slack_value(line: str) -> Optional[float]:
     return val
 
 
+def _load_block_map_file(path: Path) -> List[Tuple[str, str]]:
+    """Read mapping file.
+
+    Supported line formats (whitespace-insensitive):
+      m_misc/m_max_buf/ -> m_max_buf
+      m_misc/m_max_buf/  m_max_buf
+    Lines starting with # are ignored.
+    """
+    out: List[Tuple[str, str]] = []
+    for raw in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "->" in line:
+            left, right = [x.strip() for x in line.split("->", 1)]
+        else:
+            parts = line.split()
+            if len(parts) < 2:
+                raise ValueError(f"Bad mapping line: {raw!r}")
+            left, right = parts[0].strip(), parts[1].strip()
+        out.append((_normalize_prefix(left), right))
+    return out
+
+
+def _parse_block_map_args(entries: List[str], files: List[Path]) -> List[Tuple[str, str]]:
+    out: List[Tuple[str, str]] = []
+    for e in entries:
+        if "=" not in e:
+            raise ValueError(f"--block-map expects prefix=name, got: {e!r}")
+        prefix, name = e.split("=", 1)
+        out.append((_normalize_prefix(prefix), name.strip()))
+    for f in files:
+        out.extend(_load_block_map_file(f))
+    # longest prefix wins
+    out.sort(key=lambda t: len(t[0]), reverse=True)
+    return out
+
+
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser()
     ap.add_argument("report", type=Path)
     ap.add_argument("-o", "--output", type=Path, required=False)
+    ap.add_argument(
+        "--block-map",
+        action="append",
+        default=[],
+        help=(
+            "Block mapping entry prefix=name (repeatable). Longest prefix match wins. "
+            "Example: --block-map 'm_misc/m_max_buf/=m_max_buf'"
+        ),
+    )
+    ap.add_argument(
+        "--block-map-file",
+        action="append",
+        type=Path,
+        default=[],
+        help=(
+            "Path to a mapping file (repeatable). Lines: 'prefix -> name'. "
+            "Example line: m_misc/m_max_buf/ -> m_max_buf"
+        ),
+    )
     return ap.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    prefix_map = _parse_block_map_args(args.block_map, args.block_map_file)
+
     paths = list(iter_paths(open_text(args.report)))
-    summary = emit_summary(paths)
+    summary = emit_summary(paths, prefix_map)
+
     if args.output:
         args.output.write_text(summary, encoding="utf-8")
     else:
