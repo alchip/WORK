@@ -244,17 +244,14 @@ def iter_paths(lines: Iterable[str]) -> Iterator[PathRec]:
         yield cur
 
 
-def make_slack_bins() -> List[Tuple[Optional[float], Optional[float], str]]:
-    # (lo, hi, label) where bin is (hi, lo] in the printed style:
-    # "-0.002ns < -0.004ns" means -0.004 <= slack < -0.002.
+def make_slack_bins_compact() -> List[Tuple[Optional[float], Optional[float], str]]:
+    """Slack bins that match /Users/sunnyy/test/range style.
+
+    Labels are like: "-0.020 < -0.030" and the last row is open-ended.
+    """
     edges = [
         -0.000,
-        -0.002,
-        -0.004,
-        -0.006,
-        -0.008,
         -0.010,
-        -0.015,
         -0.020,
         -0.030,
         -0.040,
@@ -277,15 +274,11 @@ def make_slack_bins() -> List[Tuple[Optional[float], Optional[float], str]]:
         -0.300,
         -0.400,
         -0.500,
-        -1.000,
-        -2.000,
-        -5.000,
     ]
     bins: List[Tuple[Optional[float], Optional[float], str]] = []
     for a, b in zip(edges[:-1], edges[1:]):
-        bins.append((a, b, f" {a:+.3f}ns < {b:+.3f}ns".replace("+", "")))
-    # final open-ended: slack < -5.0
-    bins.append((-5.000, None, " -5.000ns <"))
+        bins.append((a, b, f"{a:.3f} < {b:.3f}"))
+    bins.append((-0.500, None, "-0.500 <"))
     return bins
 
 
@@ -352,13 +345,30 @@ def fmt3(x: float) -> str:
     return f"{x:.3f}"
 
 
-def emit_summary(paths: List[PathRec], prefix_map: List[Tuple[str, str]]) -> str:
+def emit_summary(
+    paths: List[PathRec],
+    prefix_map: List[Tuple[str, str]],
+    range_groups: List[str],
+) -> str:
     neg = [p for p in paths if p.slack is not None and p.slack < 0]
 
-    slack_bins = make_slack_bins()
+    slack_bins = make_slack_bins_compact()
     skew_bins = make_skew_bins()
 
-    slack_hist = Counter(bin_value_desc(p.slack, slack_bins) for p in neg if p.slack is not None)
+    # violation range table: total + selected path groups
+    present_groups = sorted({p.path_group for p in neg})
+    groups = range_groups or present_groups
+    groups = [g for g in groups if g in present_groups]
+
+    range_total = Counter(bin_value_desc(p.slack, slack_bins) for p in neg if p.slack is not None)
+    range_by_pg: Dict[str, Counter] = {}
+    for g in groups:
+        range_by_pg[g] = Counter(
+            bin_value_desc(p.slack, slack_bins)
+            for p in neg
+            if p.slack is not None and p.path_group == g
+        )
+
     skew_hist = Counter(
         bin_value_linear(p.skew(), skew_bins) for p in neg if p.skew() is not None
     )
@@ -427,15 +437,33 @@ def emit_summary(paths: List[PathRec], prefix_map: List[Tuple[str, str]]) -> str
     out: List[str] = []
 
     out.append("")
-    out.append(" violation range                      # of violations")
-    out.append(" ------------------------------  --------------------")
-    for lo, hi, label in slack_bins:
-        out.append(f"{label:<30}  {slack_hist.get(label,0):>21}")
-    out.append(" ------------------------------  --------------------")
-    out.append(f" total{total:>47}")
-    out.append(" ------------------------------  --------------------")
-    out.append(f" WNS:{wns:>48.3f}")
-    out.append(f" TNS:{tns:>48.3f}")
+
+    # violation range by path group (range-style table)
+    header_cols = ["violation range", "total"] + groups
+    out.append(" ".join(f"{c:<20}" for c in header_cols).rstrip())
+    out.append("-" * 132)
+    for _, __, label in slack_bins:
+        row = [
+            f"{label:<20}",
+            f"{range_total.get(label,0):<20}",
+        ]
+        for g in groups:
+            row.append(f"{range_by_pg[g].get(label,0):<20}")
+        out.append(" ".join(row).rstrip())
+    out.append("-" * 132)
+    out.append(
+        " ".join(
+            [
+                f"{'total':<20}",
+                f"{total:<20}",
+                *[f"{sum(1 for p in neg if p.path_group==g):<20}" for g in groups],
+            ]
+        ).rstrip()
+    )
+
+    # WNS/TNS
+    out.append(f"WNS: {wns:.3f}")
+    out.append(f"TNS: {tns:.3f}")
     out.append("")
 
     out.append(" original skew range                  # of violations")
@@ -583,7 +611,7 @@ def parse_args() -> argparse.Namespace:
         action="append",
         default=[],
         help=(
-            "Block mapping entry prefix=name (repeatable). Longest prefix match wins. "
+            "(Optional) Block mapping entry prefix=name (repeatable). Longest prefix match wins. "
             "Example: --block-map 'm_misc/m_max_buf/=m_max_buf'"
         ),
     )
@@ -597,15 +625,24 @@ def parse_args() -> argparse.Namespace:
             "Example line: m_misc/m_max_buf/ -> m_max_buf"
         ),
     )
+    ap.add_argument(
+        "--range-groups",
+        default="",
+        help=(
+            "Comma-separated path groups to include in the violation range table. "
+            "Default: all groups present in the report. Example: --range-groups reg2reg,reg2cgate"
+        ),
+    )
     return ap.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     prefix_map = _parse_block_map_args(args.block_map, args.block_map_file)
+    range_groups = [g.strip() for g in (args.range_groups or "").split(",") if g.strip()]
 
     paths = list(iter_paths(open_text(args.report)))
-    summary = emit_summary(paths, prefix_map)
+    summary = emit_summary(paths, prefix_map, range_groups)
 
     if args.output:
         args.output.write_text(summary, encoding="utf-8")
