@@ -564,7 +564,7 @@ def emit_summary(
             f" {pg:<30}  {pg_count[pg]:>20}  {pg_wns.get(pg,0.0):>20.3f}  {pg_tns.get(pg,0.0):>20.3f}"
         )
     out.append(" ------------------------------  --------------------  --------------------  --------------------")
-    out.append(f" *{'':<30}  {total:>20}  {wns:>20.3f}  {tns:>20.3f}")
+    out.append(f" {'*':<30}  {total:>20}  {wns:>20.3f}  {tns:>20.3f}")
     out.append("")
 
     out.append(
@@ -575,12 +575,12 @@ def emit_summary(
     )
     for (sc, ec) in sorted(clk_count.keys()):
         out.append(
-            f" {sc:<20}{ec:<20}{clk_count[(sc,ec)]:>20}{clk_wns[(sc,ec)]:>20.3f}{clk_tns[(sc,ec)]:>20.3f}"
+            f" {sc:<20}  {ec:<20}  {clk_count[(sc,ec)]:>20}  {clk_wns[(sc,ec)]:>20.3f}  {clk_tns[(sc,ec)]:>20.3f}"
         )
     out.append(
         " --------------------  --------------------  --------------------  --------------------  --------------------"
     )
-    out.append(f" {'*':<21}{'*':<20}{total:>20}{wns:>20.3f}{tns:>20.3f}")
+    out.append(f" {'*':<20}  {'*':<20}  {total:>20}  {wns:>20.3f}  {tns:>20.3f}")
     out.append("")
 
     out.append(
@@ -591,12 +591,12 @@ def emit_summary(
     )
     for (sb, eb) in sorted(blk_count.keys()):
         out.append(
-            f" {sb:<30}{eb:<30}{blk_count[(sb,eb)]:>20}{blk_wns[(sb,eb)]:>20.3f}{blk_tns[(sb,eb)]:>20.3f}"
+            f" {sb:<30}  {eb:<30}  {blk_count[(sb,eb)]:>20}  {blk_wns[(sb,eb)]:>20.3f}  {blk_tns[(sb,eb)]:>20.3f}"
         )
     out.append(
         " ------------------------------  ------------------------------  --------------------  --------------------  --------------------"
     )
-    out.append(f" {'*':<31}{'*':<31}{total:>20}{wns:>20.3f}{tns:>20.3f}")
+    out.append(f" {'*':<30}  {'*':<30}  {total:>20}  {wns:>20.3f}  {tns:>20.3f}")
     out.append("")
 
     out.append(" stage count                          # of violations")
