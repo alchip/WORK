@@ -177,7 +177,12 @@ def iter_paths(lines: Iterable[str]) -> Iterator[PathRec]:
     in_point_table = False
     seen_data_arrival = False
     output_stage_count = 0
-    last_data_pin: Optional[str] = None
+
+    # Pin capture:
+    # - start_pin: first non-net pin in the point table under the start instance hierarchy.
+    # - end_pin: last non-net pin in the point table before "data arrival time".
+    start_pin_found: Optional[str] = None
+    last_cell_pin: Optional[str] = None
 
     for raw in lines:
         line = raw.rstrip("\n")
@@ -187,7 +192,10 @@ def iter_paths(lines: Iterable[str]) -> Iterator[PathRec]:
             # finalize previous path if it had slack
             if cur and cur.slack is not None:
                 cur.stage_count = output_stage_count if output_stage_count else None
-                cur.end_pin = last_data_pin or cur.end_pin
+                if cur.end_pin is None and last_cell_pin is not None:
+                    cur.end_pin = last_cell_pin
+                if cur.start_pin is None:
+                    cur.start_pin = f"{cur.start_inst}/CP" if cur.start_inst else "*/CP"
                 yield cur
 
             start_inst = msp.group(1).strip()
@@ -199,13 +207,15 @@ def iter_paths(lines: Iterable[str]) -> Iterator[PathRec]:
                 end_clk="",
                 path_group="*",
             )
-            cur.start_pin = f"{start_inst}/CP"
+            # We'll fill start_pin from the point table if possible; keep a sensible fallback.
+            cur.start_pin = None
 
             # reset per-path state
             in_point_table = False
             seen_data_arrival = False
             output_stage_count = 0
-            last_data_pin = None
+            start_pin_found = None
+            last_cell_pin = None
             continue
 
         if cur is None:
@@ -230,8 +240,13 @@ def iter_paths(lines: Iterable[str]) -> Iterator[PathRec]:
             if RE_DATA_ARRIVAL.match(line):
                 in_point_table = False
                 seen_data_arrival = True
-                # best effort: if we didn't see end pin in the table, fall back to end_inst
-                if cur.end_pin is None and cur.end_inst:
+
+                # best effort: use the last cell pin seen in the point table as the endpoint pin.
+                # This works for normal reg2reg (*/D) as well as recovery/removal checks (*/CP, */CD, ...).
+                if last_cell_pin is not None:
+                    cur.end_pin = last_cell_pin
+                elif cur.end_pin is None and cur.end_inst:
+                    # fallback
                     cur.end_pin = f"{cur.end_inst}/D"
                 continue
 
@@ -248,13 +263,17 @@ def iter_paths(lines: Iterable[str]) -> Iterator[PathRec]:
             if "(net)" in line:
                 continue
 
+            # remember the most recent non-net pin (used for endpoint pin capture)
+            last_cell_pin = pin
+
+            # capture the first startpoint pin we see that belongs to the startpoint instance hierarchy
+            if start_pin_found is None and cur.start_inst and pin.startswith(cur.start_inst + "/"):
+                start_pin_found = pin
+                cur.start_pin = pin
+
             # count output pins as stages (only when the line is a sensitized stage, marked with '&')
             if RE_OUTPUT_PIN.search(pin) and "&" in line:
                 output_stage_count += 1
-
-            # detect endpoint data pin from the last row before data arrival time
-            if RE_DATA_PIN.search(pin):
-                last_data_pin = pin
 
         # after data arrival time, capture capture-clock delay (the next clk network delay)
         if seen_data_arrival and cur.end_clk_delay is None and RE_CLK_NW_DELAY.match(line):
@@ -268,7 +287,10 @@ def iter_paths(lines: Iterable[str]) -> Iterator[PathRec]:
     # finalize last
     if cur and cur.slack is not None:
         cur.stage_count = output_stage_count if output_stage_count else None
-        cur.end_pin = last_data_pin or cur.end_pin
+        if cur.end_pin is None and last_cell_pin is not None:
+            cur.end_pin = last_cell_pin
+        if cur.start_pin is None:
+            cur.start_pin = f"{cur.start_inst}/CP" if cur.start_inst else "*/CP"
         yield cur
 
 
@@ -468,8 +490,10 @@ def emit_summary(
 
     # violation range by path group (range-style table)
     header_cols = ["violation range", "total"] + groups
-    out.append(" ".join(f"{c:<20}" for c in header_cols).rstrip())
-    out.append("-" * 132)
+    header_line = " ".join(f"{c:<20}" for c in header_cols).rstrip()
+    sep = "-" * len(header_line)
+    out.append(header_line)
+    out.append(sep)
     for _, __, label in slack_bins:
         row = [
             f"{label:<20}",
@@ -478,7 +502,7 @@ def emit_summary(
         for g in groups:
             row.append(f"{range_by_pg[g].get(label,0):<20}")
         out.append(" ".join(row).rstrip())
-    out.append("-" * 132)
+    out.append(sep)
     out.append(
         " ".join(
             [
