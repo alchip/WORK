@@ -155,6 +155,11 @@ def _normalize_prefix(p: str) -> str:
     return p if p.endswith("/") else (p + "/")
 
 
+def is_port_name(s: str) -> bool:
+    """Heuristic: PrimeTime may show ports as bare names with no hierarchy."""
+    return bool(s) and ("/" not in s)
+
+
 def top_block(inst: str, prefix_map: List[Tuple[str, str]]) -> str:
     """Return the block name used in the startpoint/endpoint block table.
 
@@ -183,6 +188,8 @@ def iter_paths(lines: Iterable[str]) -> Iterator[PathRec]:
     # - end_pin: last non-net pin in the point table before "data arrival time".
     start_pin_found: Optional[str] = None
     last_cell_pin: Optional[str] = None
+    start_is_port = False
+    end_is_port = False
 
     for raw in lines:
         line = raw.rstrip("\n")
@@ -192,10 +199,12 @@ def iter_paths(lines: Iterable[str]) -> Iterator[PathRec]:
             # finalize previous path if it had slack
             if cur and cur.slack is not None:
                 cur.stage_count = output_stage_count if output_stage_count else None
-                if cur.end_pin is None and last_cell_pin is not None:
+                if cur.end_pin is None and last_cell_pin is not None and not end_is_port:
                     cur.end_pin = last_cell_pin
                 if cur.start_pin is None:
-                    cur.start_pin = f"{cur.start_inst}/CP" if cur.start_inst else "*/CP"
+                    cur.start_pin = cur.start_inst if start_is_port else (f"{cur.start_inst}/CP" if cur.start_inst else "*/CP")
+                if cur.end_pin is None and cur.end_inst:
+                    cur.end_pin = cur.end_inst if end_is_port else f"{cur.end_inst}/D"
                 yield cur
 
             start_inst = msp.group(1).strip()
@@ -207,8 +216,11 @@ def iter_paths(lines: Iterable[str]) -> Iterator[PathRec]:
                 end_clk="",
                 path_group="*",
             )
-            # We'll fill start_pin from the point table if possible; keep a sensible fallback.
-            cur.start_pin = None
+
+            # We'll fill start_pin from the point table if possible.
+            # If Startpoint is an input port (no hierarchy), use the port name directly.
+            start_is_port = is_port_name(start_inst)
+            cur.start_pin = start_inst if start_is_port else None
 
             # reset per-path state
             in_point_table = False
@@ -216,6 +228,7 @@ def iter_paths(lines: Iterable[str]) -> Iterator[PathRec]:
             output_stage_count = 0
             start_pin_found = None
             last_cell_pin = None
+            end_is_port = False
             continue
 
         if cur is None:
@@ -225,6 +238,10 @@ def iter_paths(lines: Iterable[str]) -> Iterator[PathRec]:
         if mep:
             cur.end_inst = mep.group(1).strip()
             cur.end_clk = extract_clock_name(mep.group(2))
+            end_is_port = is_port_name(cur.end_inst)
+            # If Endpoint is an output port (no hierarchy), use the port name directly.
+            if end_is_port:
+                cur.end_pin = cur.end_inst
             continue
 
         mpg = RE_PATH_GROUP.match(line)
@@ -241,9 +258,12 @@ def iter_paths(lines: Iterable[str]) -> Iterator[PathRec]:
                 in_point_table = False
                 seen_data_arrival = True
 
-                # best effort: use the last cell pin seen in the point table as the endpoint pin.
+                # best effort: prefer the port name for reg2out endpoints.
+                if end_is_port and cur.end_inst:
+                    cur.end_pin = cur.end_inst
+                # Otherwise use the last cell pin seen in the point table as the endpoint pin.
                 # This works for normal reg2reg (*/D) as well as recovery/removal checks (*/CP, */CD, ...).
-                if last_cell_pin is not None:
+                elif last_cell_pin is not None:
                     cur.end_pin = last_cell_pin
                 elif cur.end_pin is None and cur.end_inst:
                     # fallback
@@ -267,7 +287,8 @@ def iter_paths(lines: Iterable[str]) -> Iterator[PathRec]:
             last_cell_pin = pin
 
             # capture the first startpoint pin we see that belongs to the startpoint instance hierarchy
-            if start_pin_found is None and cur.start_inst and pin.startswith(cur.start_inst + "/"):
+            # (skip if the startpoint is an input port)
+            if (not start_is_port) and start_pin_found is None and cur.start_inst and pin.startswith(cur.start_inst + "/"):
                 start_pin_found = pin
                 cur.start_pin = pin
 
@@ -287,10 +308,12 @@ def iter_paths(lines: Iterable[str]) -> Iterator[PathRec]:
     # finalize last
     if cur and cur.slack is not None:
         cur.stage_count = output_stage_count if output_stage_count else None
-        if cur.end_pin is None and last_cell_pin is not None:
+        if cur.end_pin is None and last_cell_pin is not None and not end_is_port:
             cur.end_pin = last_cell_pin
         if cur.start_pin is None:
-            cur.start_pin = f"{cur.start_inst}/CP" if cur.start_inst else "*/CP"
+            cur.start_pin = cur.start_inst if start_is_port else (f"{cur.start_inst}/CP" if cur.start_inst else "*/CP")
+        if cur.end_pin is None and cur.end_inst:
+            cur.end_pin = cur.end_inst if end_is_port else f"{cur.end_inst}/D"
         yield cur
 
 
@@ -453,7 +476,15 @@ def emit_summary(
         clk_wns[k] = min(clk_wns.get(k, p.slack), p.slack)
 
     # start/end block table
-    blk_key = lambda p: (top_block(p.start_inst, prefix_map), top_block(p.end_inst, prefix_map))
+    def start_block(p: PathRec) -> str:
+        # in2reg: startpoint is input port
+        return "in" if is_port_name(p.start_inst) else top_block(p.start_inst, prefix_map)
+
+    def end_block(p: PathRec) -> str:
+        # reg2out: endpoint is output port
+        return "out" if is_port_name(p.end_inst) else top_block(p.end_inst, prefix_map)
+
+    blk_key = lambda p: (start_block(p), end_block(p))
     blk_count: Dict[Tuple[str, str], int] = Counter(blk_key(p) for p in neg)
     blk_wns: Dict[Tuple[str, str], float] = {}
     blk_tns: Dict[Tuple[str, str], float] = Counter()
