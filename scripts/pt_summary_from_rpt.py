@@ -50,8 +50,13 @@ from pathlib import Path
 from typing import Dict, Iterable, Iterator, List, Optional, Tuple
 
 
-RE_STARTPOINT = re.compile(r"^\s*Startpoint:\s*(.+?)\s*\((.*clocked by\s+(\S+).*)\)")
-RE_ENDPOINT = re.compile(r"^\s*Endpoint:\s*(.+?)\s*\((.*clocked by\s+(\S+).*)\)")
+# PrimeTime report headers vary by check type (setup/hold vs recovery/removal).
+# Examples:
+#   Startpoint: foo (.. clocked by ant_clk)
+#   Endpoint: bar (recovery check against rising-edge clock ant_clk)
+# Keep parsing robust by extracting the clock name from the parenthesized text.
+RE_STARTPOINT = re.compile(r"^\s*Startpoint:\s*(.+?)\s*\((.*)\)\s*$")
+RE_ENDPOINT = re.compile(r"^\s*Endpoint:\s*(.+?)\s*\((.*)\)\s*$")
 RE_PATH_GROUP = re.compile(r"^\s*Path Group:\s*(\S+)")
 RE_POINT_TABLE = re.compile(r"^\s*Point\b")
 RE_DATA_ARRIVAL = re.compile(r"^\s*data arrival time\b")
@@ -109,6 +114,29 @@ def open_text(path: Path) -> Iterator[str]:
             yield from f
 
 
+_CLOCK_TOKEN = re.compile(r"\bclocked\s+by\s+(\S+)")
+_CLOCK_TOKEN2 = re.compile(r"\bclock\s+(\S+)")
+
+
+def extract_clock_name(paren_text: str) -> str:
+    """Extract the clock name from the '(...)' tail of Startpoint/Endpoint lines.
+
+    Handles variants like:
+      - '... clocked by ant_clk'
+      - '... clock ant_clk'
+      - '... rising-edge clock ant_clk'
+
+    Returns '*' if no clock name can be found.
+    """
+    m = _CLOCK_TOKEN.search(paren_text)
+    if not m:
+        m = _CLOCK_TOKEN2.search(paren_text)
+    if not m:
+        return "*"
+    # Strip trailing punctuation/brackets.
+    return m.group(1).strip().rstrip(")];,:")
+
+
 def parse_first_float(line: str) -> Optional[float]:
     m = RE_FIRST_FLOAT.search(line)
     return float(m.group(1)) if m else None
@@ -163,7 +191,7 @@ def iter_paths(lines: Iterable[str]) -> Iterator[PathRec]:
                 yield cur
 
             start_inst = msp.group(1).strip()
-            start_clk = msp.group(3).strip()
+            start_clk = extract_clock_name(msp.group(2))
             cur = PathRec(
                 start_inst=start_inst,
                 end_inst="",
@@ -186,7 +214,7 @@ def iter_paths(lines: Iterable[str]) -> Iterator[PathRec]:
         mep = RE_ENDPOINT.match(line)
         if mep:
             cur.end_inst = mep.group(1).strip()
-            cur.end_clk = mep.group(3).strip()
+            cur.end_clk = extract_clock_name(mep.group(2))
             continue
 
         mpg = RE_PATH_GROUP.match(line)
