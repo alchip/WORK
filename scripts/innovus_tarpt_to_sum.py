@@ -54,6 +54,7 @@ class Rec:
     ec: str = "unknown"
     slack: float = 0.0
     stage: int = 0
+    data_arcs: int = 0
 
 
 @dataclass
@@ -125,10 +126,25 @@ def parse(path: Path) -> ParseOut:
     out: list[Rec] = []
     cur = Rec()
     scenario = "NA"
+    has_path = False
+    have_slack = False
+    launch_seen = False
+
+    def flush_current() -> None:
+        nonlocal cur, have_slack, launch_seen
+        # user-defined stage rule: two arc-lines form one complete stage
+        cur.stage = cur.data_arcs // 2
+        if have_slack and cur.sp and cur.ep and is_non_positive(cur.slack):
+            out.append(cur)
+        cur = Rec()
+        have_slack = False
+        launch_seen = False
 
     for line in open_lines(path):
         if PATH_RE.match(line):
-            cur = Rec()
+            if has_path:
+                flush_current()
+            has_path = True
             continue
 
         if scenario == "NA" and line.startswith("Analysis View:"):
@@ -152,15 +168,18 @@ def parse(path: Path) -> ParseOut:
             continue
 
         if "->" in line:
-            cur.stage += 1
+            if re.search(r"\bCP\s*[\^v]?\s*->\s*Q", line):
+                launch_seen = True
+            if launch_seen:
+                cur.data_arcs += 1
 
         m = SLACK_RE.search(line)
         if m:
-            val = float(m.group(1))
-            cur.slack = val
-            if cur.sp and cur.ep and is_non_positive(val):
-                out.append(cur)
-            cur = Rec()
+            cur.slack = float(m.group(1))
+            have_slack = True
+
+    if has_path:
+        flush_current()
 
     return ParseOut(recs=out, scenario=scenario)
 
