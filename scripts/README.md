@@ -97,6 +97,22 @@ Common options:
 - `--name-width 12`
 - `--indent-width 16`
 
+## Quick wrapper
+
+### `run_examples.sh`
+
+A tiny convenience wrapper to run common flows without remembering full commands.
+
+```bash
+# PT summary
+./run_examples.sh pt /path/to/wo_io.rpt.gz
+./run_examples.sh pt /path/to/wo_io.rpt.gz /tmp/out.summary
+
+# Tcl -> cfg
+./run_examples.sh tcl /path/to/input.tcl
+./run_examples.sh tcl /path/to/input.tcl /tmp/output.cfg
+```
+
 ## Notes
 
 - If you want to run without `chmod +x`, use `python3 script.py ...`.
