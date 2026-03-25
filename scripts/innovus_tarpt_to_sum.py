@@ -1,4 +1,33 @@
 #!/usr/bin/env python3
+"""
+innovus_tarpt_to_sum.py
+
+Convert Innovus timing reports (.tarpt.gz or text) into summary (.sum).
+
+Quick usage:
+  # 1) Single report -> single summary
+  python3 innovus_tarpt_to_sum.py /path/place_reg2reg.tarpt.gz -o /path/place_reg2reg.sum
+
+  # 2) Merge multiple reports into one summary
+  python3 innovus_tarpt_to_sum.py \
+    /path/place_in2reg.tarpt.gz \
+    /path/place_reg2out.tarpt.gz \
+    /path/place_reg2reg.tarpt.gz \
+    -o /path/place_merged.sum
+
+  # 3) With block mapping (longest-prefix match)
+  python3 innovus_tarpt_to_sum.py /path/place_reg2reg.tarpt.gz \
+    --block-map-file /path/block_map.txt \
+    --block-map "u_tdu_top/u_xpa/=TDU_XPA" \
+    -o /path/place_reg2reg.sum
+
+Notes:
+  - scenario is taken from 'Analysis View: ...' line in report.
+  - timing slack bins include slack <= 0.
+  - Non-hierarchical pins map by default to:
+      start_point_block = INPUT
+      end_point_block   = OUTPUT
+"""
 from __future__ import annotations
 
 import argparse
@@ -160,9 +189,9 @@ def bin_label(v: float, bins: Iterable[tuple[float | None, float | None, str]]) 
     return "-0.500 <"
 
 
-def emit(recs: list[Rec], path_group_name: str, scenario: str, block_map: list[tuple[str, str]]) -> str:
+def emit(recs: list[Rec], scenario: str, block_map: list[tuple[str, str]]) -> str:
     bins = slack_bins()
-    bcnt = Counter(bin_label(r.slack, bins) for r in recs)
+    bcnt_total = Counter(bin_label(r.slack, bins) for r in recs)
 
     stage_map: dict[int, list[float]] = defaultdict(list)
     for r in recs:
@@ -171,6 +200,13 @@ def emit(recs: list[Rec], path_group_name: str, scenario: str, block_map: list[t
     pg_map: dict[str, list[float]] = defaultdict(list)
     for r in recs:
         pg_map[r.pg].append(r.slack)
+
+    pg_names = sorted(pg_map.keys())
+
+    bcnt_by_pg: dict[str, Counter] = {pg: Counter() for pg in pg_names}
+    for r in recs:
+        b = bin_label(r.slack, bins)
+        bcnt_by_pg[r.pg][b] += 1
 
     blk_map: dict[tuple[str, str], list[float]] = defaultdict(list)
     for r in recs:
@@ -192,15 +228,24 @@ def emit(recs: list[Rec], path_group_name: str, scenario: str, block_map: list[t
     lines.append(f"scenario: {scenario}")
     lines.append("")
 
-    # timing slack
+    # timing slack (total + per path-group columns)
     lines.append("#start timing slack")
-    lines.append(f"{'violation range':<21}{'total':<22}{path_group_name:<22}")
-    lines.append("-" * 66)
+    colw = 22
+    header = f"{'violation range':<21}{'total':<{colw}}"
+    for pg in pg_names:
+        header += f"{pg:<{colw}}"
+    lines.append(header)
+    lines.append("-" * len(header))
     for _, _, label in bins:
-        c = bcnt.get(label, 0)
-        lines.append(f"{label:<21}{c:<22}{c:<22}")
-    lines.append("-" * 66)
-    lines.append(f"{'total':<21}{total:<22}{total:<22}")
+        row = f"{label:<21}{bcnt_total.get(label, 0):<{colw}}"
+        for pg in pg_names:
+            row += f"{bcnt_by_pg[pg].get(label, 0):<{colw}}"
+        lines.append(row)
+    lines.append("-" * len(header))
+    total_row = f"{'total':<21}{total:<{colw}}"
+    for pg in pg_names:
+        total_row += f"{len(pg_map[pg]):<{colw}}"
+    lines.append(total_row)
     lines.append("#end timing slack")
     lines.append("")
 
@@ -268,8 +313,8 @@ def emit(recs: list[Rec], path_group_name: str, scenario: str, block_map: list[t
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Innovus tarpt.gz to .sum")
-    ap.add_argument("report", type=Path)
+    ap = argparse.ArgumentParser(description="Innovus tarpt(.gz) to .sum (single or merged multi-report)")
+    ap.add_argument("reports", type=Path, nargs="+")
     ap.add_argument("-o", "--output", type=Path, required=False)
     ap.add_argument(
         "--block-map",
@@ -288,14 +333,25 @@ def main() -> None:
 
     block_map = _parse_block_map_args(args.block_map, args.block_map_file)
 
-    parsed = parse(args.report)
-    recs = parsed.recs
-    # use dominant path group name for header
-    pg = Counter(r.pg for r in recs)
-    pg_name = pg.most_common(1)[0][0] if pg else "group"
-    text = emit(recs, pg_name, parsed.scenario, block_map)
+    all_recs: list[Rec] = []
+    scenarios: list[str] = []
+    for rp in args.reports:
+        parsed = parse(rp)
+        all_recs.extend(parsed.recs)
+        scenarios.append(parsed.scenario)
 
-    out = args.output if args.output else args.report.with_suffix("").with_suffix(".sum")
+    uniq_scenarios = sorted(set(scenarios))
+    scenario = uniq_scenarios[0] if len(uniq_scenarios) == 1 else f"MIXED({','.join(uniq_scenarios)})"
+
+    text = emit(all_recs, scenario, block_map)
+
+    if args.output:
+        out = args.output
+    else:
+        if len(args.reports) == 1:
+            out = args.reports[0].with_suffix("").with_suffix(".sum")
+        else:
+            out = Path.cwd() / "merged.sum"
     out.write_text(text, encoding="utf-8")
 
 
