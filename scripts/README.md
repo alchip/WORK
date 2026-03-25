@@ -113,6 +113,61 @@ A tiny convenience wrapper to run common flows without remembering full commands
 ./run_examples.sh tcl /path/to/input.tcl /tmp/output.cfg
 ```
 
+### 3) `innovus_tarpt_to_sum.py`
+
+Generate `.sum` from Innovus timing report (`.tarpt.gz` / text).
+
+**Current output sections**
+- timing slack
+- stage count
+- path group
+- ends block
+- clock group
+- detail timing path
+
+**Scenario**
+- `scenario:` is taken from report line `Analysis View: ...`
+
+**Default block naming**
+- `start_point_block`: if pin has no hierarchy (`/`) -> `INPUT`
+- `end_point_block`: if pin has no hierarchy (`/`) -> `OUTPUT`
+
+**Block mapping (optional, longest-prefix match)**
+
+```bash
+python3 ./innovus_tarpt_to_sum.py /path/to/place_reg2reg.tarpt.gz \
+  --block-map-file ./block_map.example.txt \
+  -o /path/to/place_reg2reg.sum
+```
+
+Supported mapping options:
+- `--block-map prefix=name` (repeatable)
+- `--block-map-file <file>` (repeatable, line format: `prefix -> name`)
+
+---
+
+### 4) `gen_summaries.csh` (tcsh)
+
+Batch-generate summary for all `*.tarpt.gz` under a directory.
+
+```tcsh
+./gen_summaries.csh -path /Users/sunny/WORK/tmp
+```
+
+This generates same-name outputs:
+- `xxx.tarpt.gz` -> `xxx.sum`
+
+Optional:
+
+```tcsh
+# custom suffix
+./gen_summaries.csh -path /Users/sunny/WORK/tmp -suffix .clock.new.sum
+
+# with block map file
+./gen_summaries.csh -path /Users/sunny/WORK/tmp \
+  -block_map_file ./block_map.example.txt
+```
+
 ## Notes
 
 - If you want to run without `chmod +x`, use `python3 script.py ...`.

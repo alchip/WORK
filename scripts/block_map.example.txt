@@ -1,0 +1,34 @@
+# Example block map for innovus_tarpt_to_sum.py
+#
+# Format (one per line):
+#   prefix -> block_name
+#
+# Notes:
+# - Longest-prefix match wins.
+# - Keep trailing '/' on hierarchy prefixes (recommended).
+# - Any pin without hierarchy ('/' not present) will still map to:
+#     start_point_block = INPUT
+#     end_point_block   = OUTPUT
+
+# ----- TDU -----
+u_tdu_top/u_xpa/ -> TDU_XPA
+u_tdu_top/t_ptq/ -> TDU_PTQ
+u_tdu_top/t_dist_dpc/ -> TDU_DPC
+u_tdu_top/t_dist_dpc_tran/ -> TDU_DPC_TRAN
+u_tdu_top/t_dist_event/ -> TDU_DIST_EVENT
+u_tdu_top/t_die_master/ -> TDU_DIE_MST
+u_tdu_top/t_die_slave/ -> TDU_DIE_SLV
+
+# ----- SNOOP -----
+u_snoop_top/u_mmn0_prefilter_ctrl/ -> SNOOP_MMN0_PREF
+u_snoop_top/u_agrf_prefilter_ctrl/ -> SNOOP_AGRF_PREF
+u_snoop_top/u_ace_req_ctrl/ -> SNOOP_ACE_REQ
+u_snoop_top/SNOOP2MMN0_REGISTER_SLICE_0__u_snoop2mmn0_r_rs/ -> SNOOP2MMN0_R
+u_snoop_top/SNOOP2MMN1_REGISTER_SLICE_0__u_snoop2mmn1_r_rs/ -> SNOOP2MMN1_R
+u_snoop_top/SNOOP2MMN0_REGISTER_SLICE_0__u_snoop2mmn0_w_rs/ -> SNOOP2MMN0_W
+u_snoop_top/SNOOP2MMN1_REGISTER_SLICE_0__u_snoop2mmn1_w_rs/ -> SNOOP2MMN1_W
+u_snoop_top/MMN2SNOOP0_REGISTER_SLICE_0__u_mmn2snoop0_r_rs/ -> MMN2SNOOP0_R
+u_snoop_top/AGRF2SNOOP_REGISTER_SLICE_0__u_agrf2snoop_r_rs/ -> AGRF2SNOOP_R
+
+# ----- PMU -----
+u_pmu_top/u_pmu_axi_mst_ctrl/ -> PMU_AXI_MST
