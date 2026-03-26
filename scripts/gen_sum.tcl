@@ -110,16 +110,16 @@ proc gen_sum {args} {
         lappend cmd -block_map $m
     }
 
-    puts "[gen_sum] Running: [join $cmd { }]"
+    puts "gen_sum Running: [join $cmd { }]"
 
     # Use exec directly (no shell quoting issues)
     set rc [catch {eval exec $cmd} out]
     if {$rc != 0} {
-        puts stderr "[gen_sum] ERROR"
+        puts stderr "gen_sum ERROR"
         puts stderr $out
         error "gen_sum failed"
     }
 
     puts $out
-    puts "[gen_sum] done"
+    puts "gen_sum done"
 }
